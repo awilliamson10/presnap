@@ -2,6 +2,7 @@ import polars as pl
 import torch
 from torch.utils.data import Dataset
 
+
 def build_feature_index(vocab, feature_names):
     # Define the feature to embedding index mapping
     feature_index = {}
@@ -28,4 +29,8 @@ class PreSnapEncoderDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data[idx].to_dicts()[0]
         inputs = torch.tensor([item[k] for k in self.feature_names if k != 'drives'], dtype=torch.long).to(self.device)
-        return inputs
+        return {
+            'inputs': inputs,
+            'labels': inputs,
+            'label_ids': inputs,
+        }

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from transformers import PreTrainedModel, PretrainedConfig
+from transformers import PretrainedConfig, PreTrainedModel
+
 
 class SportsDataConfig(PretrainedConfig):
     model_type = "sports_data_encoder"

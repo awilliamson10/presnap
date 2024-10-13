@@ -8,9 +8,10 @@ from sklearn.model_selection import train_test_split
 from transformers import Trainer, TrainingArguments
 
 from presnap.encoder.builder import build_encoder_model
-from presnap.encoder.model import masked_reconstruction_loss
 from presnap.encoder.dataset import PreSnapEncoderDataset
+from presnap.encoder.model import masked_reconstruction_loss
 from presnap.utils import load_vocab
+
 
 @dataclass
 class PreSnapTrainingConfig:
