@@ -25,6 +25,10 @@ class SparseAutoencoderTrainer(Trainer):
         # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=self.args.max_grad_norm)
 
+        # Reinitialize dead neurons and apply ghost gradients
+        model.reinitialize_dead_neurons()
+        model.ghost_gradient_update()
+
         return loss.detach()
 
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -85,7 +89,7 @@ class SparseAutoencoderTrainer(Trainer):
 
         with torch.no_grad():
             l0_norm = (encoded != 0).float().sum(dim=1).mean().item()
-            dead_neurons = (encoded == 0).all(dim=0).sum().item()
+            dead_neurons = (model.steps_since_activation >= model.config.dead_neuron_threshold).sum().item()
 
         self.log({
             "reconstruction_loss": reconstruction_loss.item(),
@@ -121,21 +125,28 @@ def train_sae():
         vocab=train_dataset.vocab,
         feature_index=train_dataset.feature_index,
         embedding_dim=64,
-        hidden_dim=4096,
+        hidden_dim=768,
         latent_dim=2048,
         sparsity_param=0.05,
         sparsity_weight=0,  # Reduced further to balance with increased reconstruction focus
         l1_reg=0,  # L1 regularization strength
         l2_reg=0,  # L2 regularization strength
+        dead_neuron_threshold=1000,
+        device="mps",
+        encoder_layers=1,
+        decoder_layers=1,
     )
     model = SparseAutoencoder(model_config)
+
+    # Log number of trainable parameters
+    print({"trainable_parameters": f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}"})
 
     # Define training arguments with updated learning rate schedule
     training_args = TrainingArguments(
         output_dir="./results",
         num_train_epochs=1,  # Increased number of epochs
-        per_device_train_batch_size=16,  # Increased batch size if memory allows
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=4,  # Increased batch size if memory allows
+        per_device_eval_batch_size=4,
         warmup_ratio=0.1,
         weight_decay=0.01,
         logging_dir="./logs",
