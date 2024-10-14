@@ -2,7 +2,7 @@ import polars as pl
 
 from presnap.data.load import load_and_preprocess_data
 
-stats, games, drives, weather, winprobs = load_and_preprocess_data()
+stats, games, drives, weather, winprobs = load_and_preprocess_data(normalize=True)
 
 def get_game_information(game_id):
     game_info = games.filter(pl.col("id") == game_id)
@@ -79,7 +79,7 @@ def camelCase(st):
     output = ''.join(x for x in st.title() if x.isalnum())
     return output[0].upper() + output[1:]
 
-def extract_game_context(game):
+def extract_game_context(game, drives = True, include_empty_stats = False, stats_to_int = False):
     info = game.get("game_info", {})
 
     week = info.get("week", None)
@@ -124,19 +124,19 @@ def extract_game_context(game):
     awayTeam = game.get("team_stats", {}).get("away_team", {})
 
     if homeTeam is not None and awayTeam is not None:
-        home_team_stats = {f"home{camelCase(k)}": int(v) if v is not None else -100 for k, v in homeTeam.items() if k not in ["team", "conference", "season", "week"]}
-        away_team_stats = {f"away{camelCase(k)}": int(v) if v is not None else -100 for k, v in awayTeam.items() if k not in ["team", "conference", "season", "week"]}
+        home_team_stats = {f"home{camelCase(k)}": (int(v) if v is not None else -100) if stats_to_int else v for k, v in homeTeam.items() if k not in ["team", "conference", "season", "week"]}
+        away_team_stats = {f"away{camelCase(k)}": (int(v) if v is not None else -100) if stats_to_int else v for k, v in awayTeam.items() if k not in ["team", "conference", "season", "week"]}
         complete = True
     else:
         home_team_stats = {f"home{camelCase(k)}": -100 for k in stats.columns if k not in ["team", "conference", "season", "week"]}
         away_team_stats = {f"away{camelCase(k)}": -100 for k in stats.columns if k not in ["team", "conference", "season", "week"]}
         complete = False
-    drives = game.get("drives", None)
 
-    return {
-        "complete": complete,
+    if not drives:
+        drives_df = game.get("drives", None)
+
+    result = {
         "week": week,
-        "seasonType": seasonType,
         "neutralSite": neutralSite,
         "conferenceGame": conferenceGame,
         "venueId": venueId,
@@ -155,5 +155,11 @@ def extract_game_context(game):
         "homeSpread": homeSpread,
         **home_team_stats,
         **away_team_stats,
-        "drives": drives
     }
+
+    if drives:
+        result["drives"] = drives_df
+
+    if not complete and not include_empty_stats:
+        return None
+    return result

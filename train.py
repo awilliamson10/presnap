@@ -1,147 +1,87 @@
-import os
-from dataclasses import dataclass
-from typing import Optional
-
 import polars as pl
 import torch
 from sklearn.model_selection import train_test_split
 from transformers import Trainer, TrainingArguments
+from transformers.integrations import WandbCallback
 
-from presnap.encoder.builder import build_encoder_model
+import wandb
 from presnap.encoder.dataset import PreSnapEncoderDataset
-from presnap.encoder.model import masked_reconstruction_loss
+from presnap.encoder.model import PreSnapGameConfig, PreSnapGameModel
 from presnap.utils import load_vocab
+    
 
+def train():
+    # Initialize wandb
+    wandb.init(project="presnap-game-model")
 
-@dataclass
-class PreSnapTrainingConfig:
-    train_encoder: bool = True
-    preprocessed_data_path: str = "/Users/aw/projects/presnap/presnap/data/pregame_training.parquet"
-    encoder_vocab_path: str = "/Users/aw/projects/presnap/presnap/data/pregame_vocab.json"
-    output_dir: str = "./output/encoder"
-    num_train_epochs: int = 3
-    per_device_train_batch_size: int = 32
-    per_device_eval_batch_size: int = 8
-    learning_rate: float = 5e-5
-    weight_decay: float = 0.01
-    warmup_steps: int = 500
-    logging_steps: int = 1
-    save_steps: int = 10_000
-    save_total_limit: int = 2
-    evaluation_strategy: str = "steps"
-    eval_steps: int = 1000
-    load_best_model_at_end: bool = True
-    metric_for_best_model: str = "eval_loss"
-    greater_is_better: bool = False
-    seed: int = 42
-    fp16: bool = False
-    device: str = "mps"
-    test_size: float = 0.1
-    model_name: str = "presnap_encoder"
-    use_wandb: bool = False
-    wandb_project: Optional[str] = None
-    wandb_name: Optional[str] = None
+    # Load and split the data
+    data = pl.read_parquet("/Users/aw/projects/presnap/presnap/data/presnap.parquet")
+    train_data, eval_data = train_test_split(data, test_size=0.1, random_state=42)
+    token_map = load_vocab("/Users/aw/projects/presnap/presnap/data/tokens.json")
 
-def setup_wandb(config):
-    if config.use_wandb:
-        import wandb
-        wandb.init(project=config.wandb_project, name=config.wandb_name)
-        print(f"Weights & Biases initialized. Project: {config.wandb_project}, Run name: {config.wandb_name}")
+    # Create the datasets
+    train_dataset = PreSnapEncoderDataset(train_data, token_map=token_map)
+    eval_dataset = PreSnapEncoderDataset(eval_data, token_map=token_map)
 
-def load_and_split_data(config):
-    data = pl.read_parquet(config.preprocessed_data_path)
-    train_data, eval_data = train_test_split(data, test_size=config.test_size, random_state=config.seed)
-    return train_data, eval_data
+    # Create the model with updated config
+    model_config = PreSnapGameConfig(
+        categorical_features_vocab_sizes=train_dataset.categorical_features_vocab_sizes(),
+        numerical_feature_size=len(train_dataset.numerical_features()),
+        latent_dim=2048,
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
+        hidden_act="gelu",
+        hidden_dropout_prob=0.1,
+        attention_probs_dropout_prob=0.1,
+        max_position_embeddings=512,
+        initializer_range=0.02,
+    )
+    model = PreSnapGameModel(model_config)
+    model = model.to(torch.device("mps"))
 
-def create_datasets(train_data, eval_data, device):
-    train_dataset = PreSnapEncoderDataset(train_data, device)
-    eval_dataset = PreSnapEncoderDataset(eval_data, device)
-    return train_dataset, eval_dataset
+    # Log number of trainable parameters
+    print({"trainable_parameters": f"{sum(p.numel() for p in model.parameters() if p.requires_grad):,}"})
 
-def build_model(encoder_vocab, feature_names):
-    return build_encoder_model(encoder_vocab, feature_names)
-
-class CustomTrainer(Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
-        outputs = model(**inputs)
-        reconstructed_logits = outputs["reconstructed_logits"]
-        mask = outputs["mask"]
-        loss = masked_reconstruction_loss(reconstructed_logits, inputs["input_ids"], mask, model.config.vocab_sizes)
-
-        return (loss, outputs) if return_outputs else loss
-
-def setup_trainer(config, model, train_dataset, eval_dataset):
+    # Define training arguments with updated learning rate schedule
     training_args = TrainingArguments(
-        output_dir=config.output_dir,
-        num_train_epochs=config.num_train_epochs,
-        per_device_train_batch_size=config.per_device_train_batch_size,
-        per_device_eval_batch_size=config.per_device_eval_batch_size,
-        learning_rate=config.learning_rate,
-        weight_decay=config.weight_decay,
-        warmup_steps=config.warmup_steps,
-        logging_steps=config.logging_steps,
-        save_steps=config.save_steps,
-        save_total_limit=config.save_total_limit,
-        evaluation_strategy=config.evaluation_strategy,
-        eval_steps=config.eval_steps,
-        load_best_model_at_end=config.load_best_model_at_end,
-        metric_for_best_model=config.metric_for_best_model,
-        greater_is_better=config.greater_is_better,
-        fp16=config.fp16,
-        seed=config.seed,
-        report_to="wandb" if config.use_wandb else None,
-        max_grad_norm=1.0,
+        output_dir="./results",
+        num_train_epochs=20,  # Increased number of epochs
+        per_device_train_batch_size=8,  # Increased batch size if memory allows
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=8,  # Accumulate gradients to increase effective batch size
+        warmup_ratio=0.1,
+        weight_decay=0.01,
+        logging_dir="./logs",
+        logging_steps=1,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        report_to="wandb",
+        learning_rate=2e-3,  # Adjusted initial learning rate
+        lr_scheduler_type="cosine",  # Changed to cosine schedule for better convergence
+        max_grad_norm=1.0,  # Set max gradient norm for clipping
     )
 
-    return CustomTrainer(
+    # Create the trainer
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
+        callbacks=[WandbCallback()]  # Add WandbCallback
     )
 
-def main():
-    print("Starting PreSnap Encoder Training Script")
-    config = PreSnapTrainingConfig()
-    print(f"Configuration loaded: \n{config}")
+    # Train the model
+    trainer.train()
 
-    pl.set_random_seed(config.seed)
-    torch.manual_seed(config.seed)
+    # Save the best model
+    trainer.save_model("./best_model")
 
-    setup_wandb(config)
+    # Close wandb run
+    wandb.finish()
 
-    train_data, eval_data = load_and_split_data(config)
-    print(f"Train data shape: {train_data.shape}, Eval data shape: {eval_data.shape}")
-
-    train_dataset, eval_dataset = create_datasets(train_data, eval_data, config.device)
-    print(f"Train dataset size: {len(train_dataset)}, Eval dataset size: {len(eval_dataset)}")
-
-    encoder_vocab = load_vocab(config.encoder_vocab_path)
-    print(f"Vocabulary loaded. Number of keys: {len(encoder_vocab)}")
-
-    if config.train_encoder:
-        encoder = build_model(encoder_vocab, train_dataset.feature_names)
-        print(f"Encoder model built. Number of parameters: {sum(p.numel() for p in encoder.parameters())}")
-
-        trainer = setup_trainer(config, encoder, train_dataset, eval_dataset)
-        print("Trainer initialized")
-
-        print("Starting training")
-        try:
-            trainer.train()
-            print("Training completed")
-
-            best_model_path = os.path.join(config.output_dir, f"{config.model_name}_best")
-            trainer.save_model(best_model_path)
-            print(f"Best model saved to {best_model_path}")
-        except Exception as e:
-            print(f"Error during training: {str(e)}")
-
-        if config.use_wandb:
-            print("Finishing Weights & Biases run")
-            wandb.finish()
-
-    print("PreSnap Encoder Training Script completed")
+    return model
 
 if __name__ == "__main__":
-    main()
+    train()
