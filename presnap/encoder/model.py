@@ -3,7 +3,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
 
+class ImprovedContrastiveLoss(nn.Module):
+    def __init__(self, temperature=1):
+        super().__init__()
+        self.temperature = temperature
 
+    def forward(self, embeddings, labels=None):
+        batch_size = embeddings.shape[0]
+
+        # Compute similarity matrix
+        sim_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
+
+        # Mask out self-contrast cases
+        sim_matrix.fill_diagonal_(-float('inf'))
+
+        # InfoNCE loss
+        labels = torch.arange(batch_size, device=embeddings.device)
+        loss = F.cross_entropy(sim_matrix, labels)
+
+        return loss
+    
 class PreSnapGameConfig(PretrainedConfig):
     model_type = "presnap_game_model"
     def __init__(
@@ -15,6 +34,7 @@ class PreSnapGameConfig(PretrainedConfig):
         num_hidden_layers=12,
         num_attention_heads=12,
         intermediate_size=3072,
+        projection_dim=128,
         hidden_act="gelu",
         hidden_dropout_prob=0.1,
         **kwargs
@@ -29,6 +49,7 @@ class PreSnapGameConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.hidden_act = hidden_act
         self.hidden_dropout_prob = hidden_dropout_prob
+        self.projection_dim = projection_dim
 
         self.model_input_names = ["input_ids", "attention_mask", "numerical_features"]
 
@@ -62,10 +83,31 @@ class PreSnapGameModel(PreTrainedModel):
         )
 
         self.pooler = nn.Linear(config.hidden_size, config.latent_dim)
+        self.projection = nn.Sequential(
+            nn.Linear(config.latent_dim, config.latent_dim),
+            nn.ReLU(),
+            nn.Linear(config.latent_dim, config.projection_dim)
+        )
+        self.contrastive_loss = ImprovedContrastiveLoss(temperature=config.temperature)
+
 
         self.init_weights()
 
+    
     def forward(self, input_ids, attention_mask, numerical_features):
+        # Process features
+        embeddings = self.process_features(input_ids, attention_mask, numerical_features)
+        
+        # Project embeddings
+        projected_embeddings = self.projection(embeddings)
+
+        # Compute contrastive loss
+        loss = self.contrastive_loss(projected_embeddings)
+
+        return {"loss": loss, "embeddings": embeddings, "projected_embeddings": projected_embeddings}
+
+
+    def process_features(self, input_ids, attention_mask, numerical_features):
         batch_size = input_ids.shape[0]
         num_cat_features = input_ids.shape[1]
         num_num_features = numerical_features.shape[1]
@@ -91,19 +133,4 @@ class PreSnapGameModel(PreTrainedModel):
 
         hidden_states = self.encoder(embeddings, src_key_padding_mask=attention_mask)
         pooled_output = self.pooler(hidden_states.mean(dim=1))  # Use mean pooling
-
-        # Calculate contrastive loss
-        norm_pooled_output = F.normalize(pooled_output, dim=1)
-        similarity_matrix = torch.matmul(norm_pooled_output, norm_pooled_output.t())
-        
-        mask = torch.eye(batch_size, dtype=torch.bool, device=pooled_output.device)
-        positive_pairs = similarity_matrix[mask].view(batch_size, 1)
-        negative_pairs = similarity_matrix[~mask].view(batch_size, -1)
-
-        temperature = self.config.temperature
-        logits = torch.cat([positive_pairs, negative_pairs], dim=1) / temperature
-        labels = torch.zeros(batch_size, dtype=torch.long, device=pooled_output.device)
-
-        loss = F.cross_entropy(logits, labels)
-
-        return {"loss": loss, "pooled_output": pooled_output}
+        return pooled_output
