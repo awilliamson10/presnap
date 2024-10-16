@@ -3,26 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from transformers import PretrainedConfig, PreTrainedModel
 
-class ImprovedContrastiveLoss(nn.Module):
-    def __init__(self, temperature=1):
-        super().__init__()
-        self.temperature = temperature
-
-    def forward(self, embeddings, labels=None):
-        batch_size = embeddings.shape[0]
-
-        # Compute similarity matrix
-        sim_matrix = torch.matmul(embeddings, embeddings.T) / self.temperature
-
-        # Mask out self-contrast cases
-        sim_matrix.fill_diagonal_(-float('inf'))
-
-        # InfoNCE loss
-        labels = torch.arange(batch_size, device=embeddings.device)
-        loss = F.cross_entropy(sim_matrix, labels)
-
-        return loss
-    
 class PreSnapGameConfig(PretrainedConfig):
     model_type = "presnap_game_model"
     def __init__(
@@ -83,31 +63,11 @@ class PreSnapGameModel(PreTrainedModel):
         )
 
         self.pooler = nn.Linear(config.hidden_size, config.latent_dim)
-        self.projection = nn.Sequential(
-            nn.Linear(config.latent_dim, config.latent_dim),
-            nn.ReLU(),
-            nn.Linear(config.latent_dim, config.projection_dim)
-        )
-        self.contrastive_loss = ImprovedContrastiveLoss(temperature=config.temperature)
-
 
         self.init_weights()
 
-    
+
     def forward(self, input_ids, attention_mask, numerical_features):
-        # Process features
-        embeddings = self.process_features(input_ids, attention_mask, numerical_features)
-        
-        # Project embeddings
-        projected_embeddings = self.projection(embeddings)
-
-        # Compute contrastive loss
-        loss = self.contrastive_loss(projected_embeddings)
-
-        return {"loss": loss, "embeddings": embeddings, "projected_embeddings": projected_embeddings}
-
-
-    def process_features(self, input_ids, attention_mask, numerical_features):
         batch_size = input_ids.shape[0]
         num_cat_features = input_ids.shape[1]
         num_num_features = numerical_features.shape[1]

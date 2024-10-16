@@ -37,11 +37,8 @@ class PreSnapEncoderDataset(Dataset):
         num_attn_mask = torch.tensor([val != -100 for val in numerical_features], dtype=torch.bool)
         attention_mask = torch.cat((cat_attn_mask, num_attn_mask))
 
-        augmented_numerical_features = augment_numerical_features(numerical_features)
-
         return {
             "input_ids": input_ids.squeeze(-1),
             "numerical_features": numerical_features.squeeze(-1),  # Add batch dimension
             "attention_mask": attention_mask.unsqueeze(0),  # Add batch dimension
-            "augmented_numerical_features": augmented_numerical_features.squeeze(-1),  # Add batch dimension
         }

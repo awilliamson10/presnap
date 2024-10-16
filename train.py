@@ -9,29 +9,6 @@ from presnap.encoder.dataset import PreSnapEncoderDataset
 from presnap.encoder.model import PreSnapGameConfig, PreSnapGameModel
 from presnap.utils import load_vocab
 
-class ContrastiveTrainer(Trainer):
-    def compute_loss(self, model, inputs, return_outputs=False):
-        # Process original features
-        outputs_original = model(input_ids=inputs['input_ids'], 
-                                 attention_mask=inputs['attention_mask'], 
-                                 numerical_features=inputs['numerical_features'])
-        
-        # Process augmented features
-        outputs_augmented = model(input_ids=inputs['input_ids'], 
-                                  attention_mask=inputs['attention_mask'], 
-                                  numerical_features=inputs['augmented_numerical_features'])
-        
-        # Combine projected embeddings
-        combined_projections = torch.cat([
-            outputs_original['projected_embeddings'],
-            outputs_augmented['projected_embeddings']
-        ], dim=0)
-        
-        # Compute contrastive loss
-        loss = model.contrastive_loss(combined_projections)
-
-        return (loss, outputs_original) if return_outputs else loss
-
 def train():
     # Initialize wandb
     wandb.init(project="presnap-game-model")
@@ -87,7 +64,7 @@ def train():
     )
 
     # Create the trainer
-    trainer = ContrastiveTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
