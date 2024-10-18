@@ -88,6 +88,9 @@ def extract_game_context(game, drives = True, include_empty_stats = False, stats
     conferenceGame = info.get("conferenceGame", None)
     venueId = info.get("venueId", None)
 
+    homePoints = info.get("homePoints", None)
+    awayPoints = info.get("awayPoints", None)
+
     homeId = info.get("homeId", None)
     homeConference = info.get("homeConference", None)
     awayId = info.get("awayId", None)
@@ -153,6 +156,7 @@ def extract_game_context(game, drives = True, include_empty_stats = False, stats
         "weatherCondition": weatherCondition,
         "homeWinProb": homeWinProb,
         "homeSpread": homeSpread,
+        "points": [homePoints, awayPoints],
         **home_team_stats,
         **away_team_stats,
     }

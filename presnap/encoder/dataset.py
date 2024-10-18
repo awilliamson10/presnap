@@ -3,10 +3,6 @@ import torch
 from torch.utils.data import Dataset
 from typing import Dict
 
-def augment_numerical_features(numerical_features, noise_scale=0.1):
-    noise = torch.randn_like(numerical_features) * noise_scale
-    return numerical_features + noise
-
 class PreSnapEncoderDataset(Dataset):
     def __init__(self, data: pl.DataFrame, token_map: dict):
         self.data = data
@@ -17,10 +13,13 @@ class PreSnapEncoderDataset(Dataset):
 
     def categorical_features(self):
         return list(self.token_map.keys())
+
+    def num_positions(self):
+        return len(self.categorical_features()) + len(self.numerical_features())
     
     def numerical_features(self):
         cols = self.data.columns
-        return [col for col in cols if col not in self.token_map.keys()]
+        return [col for col in cols if col not in self.token_map.keys() and col != 'points']
 
     def __len__(self):
         return len(self.data)
@@ -37,8 +36,12 @@ class PreSnapEncoderDataset(Dataset):
         num_attn_mask = torch.tensor([val != -100 for val in numerical_features], dtype=torch.bool)
         attention_mask = torch.cat((cat_attn_mask, num_attn_mask))
 
+        # Extract points as labels
+        labels = torch.tensor(row['points'], dtype=torch.float32)
+
         return {
             "input_ids": input_ids.squeeze(-1),
-            "numerical_features": numerical_features.squeeze(-1),  # Add batch dimension
-            "attention_mask": attention_mask.unsqueeze(0),  # Add batch dimension
+            "numerical_features": numerical_features.squeeze(-1),
+            "attention_mask": attention_mask,
+            "labels": labels,
         }
