@@ -1,5 +1,5 @@
 import polars as pl
-
+import numpy as np
 from presnap.data.load import load_and_preprocess_data
 
 stats, games, drives, weather, winprobs = load_and_preprocess_data(normalize=True)
@@ -90,6 +90,8 @@ def extract_game_context(game, drives = True, include_empty_stats = False, stats
 
     homePoints = info.get("homePoints", None)
     awayPoints = info.get("awayPoints", None)
+    if homePoints is None or awayPoints is None or np.isnan(homePoints) or np.isnan(awayPoints):
+        return None
 
     homeId = info.get("homeId", None)
     homeConference = info.get("homeConference", None)
@@ -156,7 +158,7 @@ def extract_game_context(game, drives = True, include_empty_stats = False, stats
         "weatherCondition": weatherCondition,
         "homeWinProb": homeWinProb,
         "homeSpread": homeSpread,
-        "points": [homePoints, awayPoints],
+        "homeSpreadResult": homePoints - awayPoints,
         **home_team_stats,
         **away_team_stats,
     }

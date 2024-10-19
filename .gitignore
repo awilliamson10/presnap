@@ -5,3 +5,6 @@ __pycache__
 *.parquet
 *.json
 *.ipynb
+
+wandb/
+results/

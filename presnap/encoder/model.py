@@ -134,26 +134,24 @@ class PreSnapGameModelForScore(PreSnapGameModel):
 
         self.init_weights()
 
-    def forward(self, input_ids, attention_mask, numerical_features):
+    def forward(self, input_ids, attention_mask, numerical_features, labels=None):
         outputs = super().forward(input_ids, attention_mask, numerical_features)
         pooled_output = outputs["pooled_output"]
         score_predictions = self.score_predictor(pooled_output)
         # Reshape to match the target shape
         score_predictions = score_predictions.unsqueeze(1)  # Shape: (batch_size, 1, 2)
-        return {"pooled_output": pooled_output, "score_predictions": score_predictions}
 
-    def score_prediction_loss(self, predictions, targets):
-        return F.mse_loss(predictions, targets)
-    
-    def huber_loss(self, predictions, targets, delta=1.0):
-        return F.smooth_l1_loss(predictions, targets, beta=delta)
+        # calculate the loss
+        if labels is not None:
+            loss = self.score_prediction_loss(score_predictions, labels)
+            return {"loss": loss, "pooled_output": pooled_output, "score_predictions": score_predictions}
+        else:
+            return {"pooled_output": pooled_output, "score_predictions": score_predictions}
 
-    def log_cosh_loss(self, predictions, targets):
-        def log_cosh(x):
-            return x + torch.log(1 + torch.exp(-2 * x)) - torch.log(torch.tensor(2.0))
-        return torch.mean(log_cosh(predictions - targets))
-
-    def custom_score_loss(self, predictions, targets, mse_weight=0.7, mae_weight=0.3):
-        mse = F.mse_loss(predictions, targets)
-        mae = F.l1_loss(predictions, targets)
-        return mse_weight * mse + mae_weight * mae
+    def score_prediction_loss(self, predictions, targets, method="huber", delta=1.0):
+        if method == "mse":
+            return F.mse_loss(predictions, targets)
+        elif method == "huber":
+            return F.smooth_l1_loss(predictions, targets, beta=delta)
+        else:
+            raise ValueError(f"Loss method {method} not recognized.")
