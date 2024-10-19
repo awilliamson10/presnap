@@ -19,7 +19,7 @@ class PreSnapEncoderDataset(Dataset):
     
     def numerical_features(self):
         cols = self.data.columns
-        return [col for col in cols if col not in self.token_map.keys() and col != 'points']
+        return [col for col in cols if col not in self.token_map.keys() and col != 'homeSpreadResult']
 
     def __len__(self):
         return len(self.data)
@@ -37,7 +37,7 @@ class PreSnapEncoderDataset(Dataset):
         attention_mask = torch.cat((cat_attn_mask, num_attn_mask))
 
         # Extract points as labels
-        labels = torch.tensor(row['points'], dtype=torch.float32)
+        labels = torch.tensor(row['homeSpreadResult'], dtype=torch.float32)
 
         return {
             "input_ids": input_ids.squeeze(-1),

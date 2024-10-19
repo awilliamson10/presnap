@@ -121,15 +121,12 @@ class PreSnapGameModel(PreTrainedModel):
         return {"pooled_output": pooled_output}
 
 
-class PreSnapGameModelForScore(PreSnapGameModel):
+class PreSnapGameModelForSpread(PreSnapGameModel):
     def __init__(self, config):
         super().__init__(config)
-        self.score_predictor = nn.Sequential(
-            nn.Linear(config.latent_dim, config.score_prediction_hidden_size),
-            nn.ReLU(),
-            nn.Linear(config.score_prediction_hidden_size, config.score_prediction_hidden_size // 2),
-            nn.ReLU(),
-            nn.Linear(config.score_prediction_hidden_size // 2, 2)  # 2 outputs for home and away scores
+        self.spread_predictor = nn.Sequential(
+            nn.Dropout(config.hidden_dropout_prob),
+            nn.Linear(config.latent_dim, 1),
         )
 
         self.init_weights()
@@ -137,20 +134,21 @@ class PreSnapGameModelForScore(PreSnapGameModel):
     def forward(self, input_ids, attention_mask, numerical_features, labels=None):
         outputs = super().forward(input_ids, attention_mask, numerical_features)
         pooled_output = outputs["pooled_output"]
-        score_predictions = self.score_predictor(pooled_output)
+        pooled_output = self.dropout(pooled_output)
+        spread_predictions = self.spread_predictor(pooled_output)
         # Reshape to match the target shape
-        score_predictions = score_predictions.unsqueeze(1)  # Shape: (batch_size, 1, 2)
+        spread_predictions = spread_predictions.unsqueeze(1)  # Shape: (batch_size, 1, 1)
 
         # calculate the loss
         if labels is not None:
-            loss = self.score_prediction_loss(score_predictions, labels)
-            return {"loss": loss, "pooled_output": pooled_output, "score_predictions": score_predictions}
+            loss = self.score_prediction_loss(spread_predictions, labels)
+            return {"loss": loss, "pooled_output": pooled_output, "spread_predictions": spread_predictions}
         else:
-            return {"pooled_output": pooled_output, "score_predictions": score_predictions}
+            return {"pooled_output": pooled_output, "spread_predictions": spread_predictions}
 
-    def score_prediction_loss(self, predictions, targets, method="huber", delta=1.0):
+    def score_prediction_loss(self, predictions, targets, method="mse", delta=1.0):
         if method == "mse":
-            return F.mse_loss(predictions, targets)
+            return F.mse_loss(predictions.view(-1), targets.view(-1))
         elif method == "huber":
             return F.smooth_l1_loss(predictions, targets, beta=delta)
         else:

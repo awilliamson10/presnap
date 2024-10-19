@@ -6,7 +6,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 import numpy as np
 import wandb
 from presnap.encoder.dataset import PreSnapEncoderDataset
-from presnap.encoder.model import PreSnapGameConfig, PreSnapGameModelForScore
+from presnap.encoder.model import PreSnapGameConfig, PreSnapGameModelForSpread
 from presnap.utils import load_vocab
 
 
@@ -56,18 +56,18 @@ def train():
         categorical_features_vocab_sizes=train_dataset.categorical_features_vocab_sizes(),
         numerical_feature_size=len(train_dataset.numerical_features()),
         latent_dim=2048,
-        hidden_size=1024,
-        num_hidden_layers=24,
-        num_attention_heads=16,
-        intermediate_size=4096,
+        hidden_size=768,
+        num_hidden_layers=12,
+        num_attention_heads=12,
+        intermediate_size=3072,
         hidden_act="gelu",
         hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
         max_position_embeddings=train_dataset.num_positions(),
         initializer_range=0.02,
-        score_prediction_hidden_size=1024,  # Added for score prediction
+        score_prediction_hidden_size=512,  # Added for score prediction
     )
-    model = PreSnapGameModelForScore(model_config)
+    model = PreSnapGameModelForSpread(model_config)
     model = model.to(torch.device("cuda"))
 
     # Log number of trainable parameters
