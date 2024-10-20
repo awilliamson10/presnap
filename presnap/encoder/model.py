@@ -7,8 +7,7 @@ class PreSnapGameConfig(PretrainedConfig):
     model_type = "presnap_game_model"
     def __init__(
         self,
-        categorical_features_vocab_sizes = {},
-        numerical_feature_size = 0,
+        input_size = 128,
         latent_dim=2048,
         hidden_size=768,
         num_hidden_layers=12,
@@ -21,8 +20,7 @@ class PreSnapGameConfig(PretrainedConfig):
         **kwargs
     ):
         super().__init__(**kwargs)
-        self.categorical_features_vocab_sizes = categorical_features_vocab_sizes
-        self.numerical_feature_size = numerical_feature_size
+        self.input_size = input_size
         self.latent_dim = latent_dim
         self.hidden_size = hidden_size
         self.num_hidden_layers = num_hidden_layers
@@ -33,7 +31,7 @@ class PreSnapGameConfig(PretrainedConfig):
         self.max_position_embeddings = max_position_embeddings
         self.score_prediction_hidden_size = score_prediction_hidden_size
 
-        self.model_input_names = ["input_ids", "attention_mask", "numerical_features", "labels"]
+        self.model_input_names = ["inputs", "attention_mask", "labels"]
 
 class ResidualTransformerEncoderLayer(nn.TransformerEncoderLayer):
     def forward(self, src, src_mask=None, src_key_padding_mask=None, **kwargs):
@@ -60,21 +58,7 @@ class PreSnapGameModel(PreTrainedModel):
         super().__init__(config)
         self.config = config
 
-        self.categorical_embeddings = nn.ModuleDict(
-            {
-                feature: nn.Embedding(vocab_size, config.hidden_size)
-                for feature, vocab_size in config.categorical_features_vocab_sizes.items()
-            }
-        )
-        self.numerical_embeddings = nn.ModuleDict(
-            {
-                f"numerical_{i}": nn.Linear(1, config.hidden_size)
-                for i in range(config.numerical_feature_size)
-            }
-        )
-
-        self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-        self.feature_type_embedding = nn.Embedding(2, config.hidden_size)
+        self.input_layer = nn.Linear(config.input_size, config.hidden_size)
 
         self.layernorm = nn.LayerNorm(config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
@@ -96,68 +80,28 @@ class PreSnapGameModel(PreTrainedModel):
 
         self.init_weights()
 
-    def forward(self, input_ids, attention_mask, numerical_features):
-        batch_size = input_ids.shape[0]
-        num_cat_features = input_ids.shape[1]
-        num_num_features = numerical_features.shape[1]
-        seq_len = num_cat_features + num_num_features
+    def forward(self, input_ids, attention_mask):
+        x = self.input_layer(input_ids)
+        x = self.layernorm(x)
+        x = self.dropout(x)
 
-        embeddings = []
-        for i, (feature, embedding) in enumerate(self.categorical_embeddings.items()):
-            embeddings.append(embedding(input_ids[:, i]))
-        
-        for i in range(num_num_features):
-            embeddings.append(self.numerical_embeddings[f"numerical_{i}"](numerical_features[:, i].unsqueeze(-1)))
+        x = self.encoder(x, src_key_padding_mask=(1 - attention_mask).bool())
+        pooled_output = self.pooler(x)
+        pooled_output = self.projection(pooled_output)
 
-        embeddings = torch.stack(embeddings, dim=1)
-
-        position_ids = torch.arange(seq_len, dtype=torch.long, device=embeddings.device)
-        embeddings += self.positional_embedding(position_ids).unsqueeze(0)
-
-        feature_type_ids = torch.cat([
-            torch.zeros(num_cat_features, dtype=torch.long, device=embeddings.device),
-            torch.ones(num_num_features, dtype=torch.long, device=embeddings.device)
-        ])
-        embeddings += self.feature_type_embedding(feature_type_ids).unsqueeze(0)
-
-        embeddings = self.layernorm(embeddings)
-        embeddings = self.dropout(embeddings)
-
-        if attention_mask.shape != (batch_size, seq_len):
-            attention_mask = attention_mask.view(batch_size, seq_len)
-
-        attention_mask = attention_mask.float()
-        attention_mask = attention_mask.masked_fill(attention_mask == 0, float('-inf'))
-        attention_mask = attention_mask.masked_fill(attention_mask == 1, float(0.0))
-
-        hidden_states = self.encoder(embeddings, src_key_padding_mask=attention_mask)
-        pooled_output = self.pooler(hidden_states)
-        projected_output = self.projection(pooled_output)
-
-        return {"pooled_output": projected_output}
-
-class ScalingLayer(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(1))
-        self.bias = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x):
-        return x * self.weight + self.bias
+        return {"pooled_output": pooled_output}
 
 
 class PreSnapGameModelForSpread(PreSnapGameModel):
     def __init__(self, config):
         super().__init__(config)
-        self.scaling = ScalingLayer()
         self.spread_predictor = nn.Linear(config.latent_dim, 1)
-
         self.init_weights()
 
     def forward(self, input_ids, attention_mask, numerical_features, labels=None):
         outputs = super().forward(input_ids, attention_mask, numerical_features)
         pooled_output = outputs["pooled_output"]
-        spread_predictions = self.scaling(self.spread_predictor(pooled_output))
+        spread_predictions = self.spread_predictor(pooled_output)
         spread_predictions = spread_predictions.unsqueeze(1)
 
         if labels is not None:

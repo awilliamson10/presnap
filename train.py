@@ -14,7 +14,6 @@ class ScorePredictionTrainer(Trainer):
     def compute_loss(self, model, inputs, return_outputs=False):
         outputs = model(input_ids=inputs['input_ids'], 
                         attention_mask=inputs['attention_mask'], 
-                        numerical_features=inputs['numerical_features'],
                         labels=inputs['labels'],
                     )
         
@@ -48,18 +47,16 @@ def train():
     wandb.init(project="presnap-game-model")
 
     # Load and split the data
-    data = pl.read_parquet("/root/presnap/presnap/data/presnap.parquet")
+    data = pl.read_parquet("/root/presnap/presnap/data/training_data.parquet")
     train_data, eval_data = train_test_split(data, test_size=0.1, random_state=42)
-    token_map = load_vocab("/root/presnap/presnap/data/tokens.json")
 
     # Create the datasets
-    train_dataset = PreSnapEncoderDataset(train_data, token_map=token_map)
-    eval_dataset = PreSnapEncoderDataset(eval_data, token_map=token_map)
+    train_dataset = PreSnapEncoderDataset(train_data)
+    eval_dataset = PreSnapEncoderDataset(eval_data)
 
     # Create the model with updated config
     model_config = PreSnapGameConfig(
-        categorical_features_vocab_sizes=train_dataset.categorical_features_vocab_sizes(),
-        numerical_feature_size=len(train_dataset.numerical_features()),
+        input_size=len(train_dataset.input_features()),
         latent_dim=128,
         hidden_size=256,
         num_hidden_layers=6,
