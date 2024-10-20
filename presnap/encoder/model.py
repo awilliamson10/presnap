@@ -35,6 +35,23 @@ class PreSnapGameConfig(PretrainedConfig):
 
         self.model_input_names = ["input_ids", "attention_mask", "numerical_features", "labels"]
 
+class ResidualTransformerEncoderLayer(nn.TransformerEncoderLayer):
+    def forward(self, src, src_mask=None, src_key_padding_mask=None, **kwargs):
+        out = super().forward(src, src_mask, src_key_padding_mask, **kwargs)
+        return out + src
+
+class MultiHeadSelfAttentionPooling(nn.Module):
+    def __init__(self, hidden_size, num_heads):
+        super().__init__()
+        self.attention = nn.MultiheadAttention(hidden_size, num_heads, batch_first=True)
+        self.fc = nn.Linear(hidden_size, 1)
+
+    def forward(self, x):
+        attn_output, _ = self.attention(x, x, x)
+        weights = F.softmax(self.fc(attn_output).squeeze(-1), dim=1)
+        return (x * weights.unsqueeze(-1)).sum(dim=1)
+
+
 class PreSnapGameModel(PreTrainedModel):
     config_class = PreSnapGameConfig
     base_model_prefix = "presnap_game_model"
@@ -49,19 +66,21 @@ class PreSnapGameModel(PreTrainedModel):
                 for feature, vocab_size in config.categorical_features_vocab_sizes.items()
             }
         )
-        self.numerical_embeddings = nn.Linear(1, config.hidden_size)
+        self.numerical_embeddings = nn.ModuleDict(
+            {
+                f"numerical_{i}": nn.Linear(1, config.hidden_size)
+                for i in range(config.numerical_feature_size)
+            }
+        )
 
-        # Positional embeddings
         self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
-
-        # Feature type embeddings
         self.feature_type_embedding = nn.Embedding(2, config.hidden_size)
 
         self.layernorm = nn.LayerNorm(config.hidden_size)
         self.dropout = nn.Dropout(config.hidden_dropout_prob)
 
         self.encoder = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(
+            ResidualTransformerEncoderLayer(
                 d_model=config.hidden_size,
                 nhead=config.num_attention_heads,
                 dim_feedforward=config.intermediate_size,
@@ -72,7 +91,8 @@ class PreSnapGameModel(PreTrainedModel):
             num_layers=config.num_hidden_layers,
         )
 
-        self.pooler = nn.Linear(config.hidden_size, config.latent_dim)
+        self.pooler = MultiHeadSelfAttentionPooling(config.hidden_size, config.num_attention_heads)
+        self.projection = nn.Linear(config.hidden_size, config.latent_dim)
 
         self.init_weights()
 
@@ -86,70 +106,69 @@ class PreSnapGameModel(PreTrainedModel):
         for i, (feature, embedding) in enumerate(self.categorical_embeddings.items()):
             embeddings.append(embedding(input_ids[:, i]))
         
-        for i in range(numerical_features.shape[1]):
-            embeddings.append(self.numerical_embeddings(numerical_features[:, i].unsqueeze(-1)))
+        for i in range(num_num_features):
+            embeddings.append(self.numerical_embeddings[f"numerical_{i}"](numerical_features[:, i].unsqueeze(-1)))
 
-        embeddings = torch.stack(embeddings, dim=1)  # Shape: (batch_size, seq_len, hidden_size)
+        embeddings = torch.stack(embeddings, dim=1)
 
-        # Add positional embeddings
         position_ids = torch.arange(seq_len, dtype=torch.long, device=embeddings.device)
         embeddings += self.positional_embedding(position_ids).unsqueeze(0)
 
-        # Add feature type embeddings
         feature_type_ids = torch.cat([
             torch.zeros(num_cat_features, dtype=torch.long, device=embeddings.device),
             torch.ones(num_num_features, dtype=torch.long, device=embeddings.device)
         ])
         embeddings += self.feature_type_embedding(feature_type_ids).unsqueeze(0)
 
-        # Apply layer normalization and dropout
         embeddings = self.layernorm(embeddings)
         embeddings = self.dropout(embeddings)
 
-        # Ensure attention_mask is the correct shape (batch_size, seq_len)
         if attention_mask.shape != (batch_size, seq_len):
             attention_mask = attention_mask.view(batch_size, seq_len)
 
-        # The transformer expects mask to be float with 0.0 for masked positions and 1.0 for unmasked
         attention_mask = attention_mask.float()
         attention_mask = attention_mask.masked_fill(attention_mask == 0, float('-inf'))
         attention_mask = attention_mask.masked_fill(attention_mask == 1, float(0.0))
 
         hidden_states = self.encoder(embeddings, src_key_padding_mask=attention_mask)
-        pooled_output = self.pooler(hidden_states.mean(dim=1))
+        pooled_output = self.pooler(hidden_states)
+        projected_output = self.projection(pooled_output)
 
-        return {"pooled_output": pooled_output}
+        return {"pooled_output": projected_output}
+
+class ScalingLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(1))
+        self.bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self, x):
+        return x * self.weight + self.bias
 
 
 class PreSnapGameModelForSpread(PreSnapGameModel):
     def __init__(self, config):
         super().__init__(config)
-        self.spread_predictor = nn.Sequential(
-            nn.Dropout(config.hidden_dropout_prob),
-            nn.Linear(config.latent_dim, 1),
-        )
+        self.scaling = ScalingLayer()
+        self.spread_predictor = nn.Linear(config.latent_dim, 1)
 
         self.init_weights()
 
     def forward(self, input_ids, attention_mask, numerical_features, labels=None):
         outputs = super().forward(input_ids, attention_mask, numerical_features)
         pooled_output = outputs["pooled_output"]
-        pooled_output = self.dropout(pooled_output)
-        spread_predictions = self.spread_predictor(pooled_output)
-        # Reshape to match the target shape
-        spread_predictions = spread_predictions.unsqueeze(1)  # Shape: (batch_size, 1, 1)
+        spread_predictions = self.scaling(self.spread_predictor(pooled_output))
+        spread_predictions = spread_predictions.unsqueeze(1)
 
-        # calculate the loss
         if labels is not None:
-            loss = self.score_prediction_loss(spread_predictions, labels)
+            loss = self.spread_prediction_loss(spread_predictions, labels)
             return {"loss": loss, "pooled_output": pooled_output, "spread_predictions": spread_predictions}
         else:
             return {"pooled_output": pooled_output, "spread_predictions": spread_predictions}
 
-    def score_prediction_loss(self, predictions, targets, method="mse", delta=1.0):
-        if method == "mse":
-            return F.mse_loss(predictions.view(-1), targets.view(-1))
-        elif method == "huber":
-            return F.smooth_l1_loss(predictions, targets, beta=delta)
-        else:
-            raise ValueError(f"Loss method {method} not recognized.")
+    def spread_prediction_loss(self, predictions, targets):
+        mse_loss = F.mse_loss(predictions.view(-1), targets.view(-1))
+        direction_loss = F.binary_cross_entropy_with_logits(
+            predictions.view(-1), (targets.view(-1) > 0).float()
+        )
+        return mse_loss + 0.1 * direction_loss

@@ -27,6 +27,11 @@ def compute_metrics(eval_pred):
     predictions = predictions[1].reshape(-1)
     labels = labels.reshape(-1)
     
+    ranges = {
+        "prediction_range": {"min": predictions.min().item(), "max": predictions.max().item()},
+        "label_range": {"min": labels.min().item(), "max": labels.max().item()},
+    }
+    
     # Calculate the mean squared error
     mse = mean_squared_error(labels, predictions)
     # Calculate the mean absolute error
@@ -34,7 +39,7 @@ def compute_metrics(eval_pred):
     # Calculate RMSE
     rmse = np.sqrt(mse)
     
-    return {"mse": mse, "mae": mae, "rmse": rmse}
+    return {"mse": mse, "mae": mae, "rmse": rmse, **ranges}
 
     
 
@@ -55,17 +60,17 @@ def train():
     model_config = PreSnapGameConfig(
         categorical_features_vocab_sizes=train_dataset.categorical_features_vocab_sizes(),
         numerical_feature_size=len(train_dataset.numerical_features()),
-        latent_dim=2048,
-        hidden_size=768,
-        num_hidden_layers=12,
-        num_attention_heads=12,
-        intermediate_size=3072,
+        latent_dim=128,
+        hidden_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=8,
+        intermediate_size=1024,
         hidden_act="gelu",
         hidden_dropout_prob=0.1,
         attention_probs_dropout_prob=0.1,
         max_position_embeddings=train_dataset.num_positions(),
         initializer_range=0.02,
-        score_prediction_hidden_size=512,  # Added for score prediction
+        score_prediction_hidden_size=256,
     )
     model = PreSnapGameModelForSpread(model_config)
     model = model.to(torch.device("cuda"))
@@ -77,10 +82,10 @@ def train():
     training_args = TrainingArguments(
         output_dir="./results",
         num_train_epochs=20,  # Increased number of epochs
-        per_device_train_batch_size=64,  # Increased batch size if memory allows
-        per_device_eval_batch_size=32,
+        per_device_train_batch_size=16,  # Increased batch size if memory allows
+        per_device_eval_batch_size=16,
         gradient_accumulation_steps=1,  # Accumulate gradients to increase effective batch size
-        warmup_ratio=0.2,
+        warmup_ratio=0.1,
         weight_decay=0.01,
         logging_dir="./logs",
         logging_steps=10,
@@ -90,7 +95,7 @@ def train():
         metric_for_best_model="mae",  # Choose the metric to use for saving the best model
         greater_is_better=False, 
         report_to="wandb",
-        learning_rate=1e-4,  # Adjusted initial learning rate
+        learning_rate=2e-3,  # Adjusted initial learning rate
         lr_scheduler_type="cosine",  # Changed to cosine schedule for better convergence
         max_grad_norm=1.0,  # Set max gradient norm for clipping
         remove_unused_columns=False,

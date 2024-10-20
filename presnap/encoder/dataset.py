@@ -7,6 +7,7 @@ class PreSnapEncoderDataset(Dataset):
     def __init__(self, data: pl.DataFrame, token_map: dict):
         self.data = data
         self.token_map = token_map
+        self.normalize_numerical_features()
 
     def categorical_features_vocab_sizes(self):
         return {col: len(self.token_map[col]) for col in self.categorical_features()}
@@ -20,6 +21,12 @@ class PreSnapEncoderDataset(Dataset):
     def numerical_features(self):
         cols = self.data.columns
         return [col for col in cols if col not in self.token_map.keys() and col != 'homeSpreadResult']
+    
+    def normalize_numerical_features(self):
+        for col in self.numerical_features():
+            self.data = self.data.with_columns([
+                pl.col(col).map_elements(lambda s: (s - self.data[col].min()) / (self.data[col].max() - self.data[col].min()), return_dtype=pl.Float64).alias(col),
+            ])
 
     def __len__(self):
         return len(self.data)
